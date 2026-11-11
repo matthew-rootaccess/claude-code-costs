@@ -351,6 +351,54 @@ function createHTMLReport(conversations) {
             height: 300px;
             margin: 30px 0;
         }
+        .box-header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+        }
+        .box-header label {
+            font-size: 0.9em;
+            color: #555;
+            cursor: pointer;
+        }
+        #boxPlot {
+            position: relative;
+            height: 170px;
+            margin: 10px 0 30px;
+        }
+        #boxPlot svg {
+            display: block;
+            font-family: Arial, sans-serif;
+        }
+        #boxPlot .box-hit {
+            cursor: crosshair;
+        }
+        #boxTooltip {
+            position: absolute;
+            display: none;
+            pointer-events: none;
+            z-index: 10;
+            background: rgba(30, 30, 30, 0.95);
+            color: #fff;
+            font-size: 12px;
+            line-height: 1.5;
+            padding: 8px 10px;
+            border-radius: 6px;
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+        }
+        #boxTooltip .tt-title {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        #boxTooltip .tt-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+        }
+        #boxTooltip .tt-row span:first-child {
+            color: #bbb;
+        }
         .filter-container {
             margin: 20px 0;
             padding: 15px;
@@ -439,6 +487,12 @@ function createHTMLReport(conversations) {
         <div class="daily-chart-container">
             <canvas id="dailyChart"></canvas>
         </div>
+
+        <div class="box-header">
+            <h2>Cost per Conversation Distribution</h2>
+            <label><input type="checkbox" id="boxLog" checked> Log scale</label>
+        </div>
+        <div id="boxPlot"><div id="boxTooltip"></div></div>
 
         <h2>Top 20 Most Expensive Conversations</h2>
         <div class="chart-container">
@@ -599,6 +653,161 @@ function createHTMLReport(conversations) {
             }
         });
 
+        // ---- Box plot: distribution of cost per conversation ----
+        // Whiskers extend to the furthest points within 1.5 x IQR; points beyond are outliers.
+        let boxConversations = allConversations;
+
+        function quantile(sorted, q) {
+            const pos = (sorted.length - 1) * q;
+            const lo = Math.floor(pos), hi = Math.ceil(pos);
+            return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+        }
+
+        function computeBoxStats(convs) {
+            const sorted = convs.slice().sort((a, b) => a.totalCost - b.totalCost);
+            const v = sorted.map(c => c.totalCost);
+            const n = v.length;
+            if (!n) return null;
+            const sum = v.reduce((s, x) => s + x, 0);
+            const mean = sum / n;
+            const q1 = quantile(v, 0.25), median = quantile(v, 0.5), q3 = quantile(v, 0.75);
+            const iqr = q3 - q1;
+            const inliers = v.filter(x => x >= q1 - 1.5 * iqr && x <= q3 + 1.5 * iqr);
+            return {
+                n, sum, mean, q1, median, q3, iqr,
+                min: v[0], max: v[n - 1],
+                p90: quantile(v, 0.9),
+                std: Math.sqrt(v.reduce((s, x) => s + (x - mean) * (x - mean), 0) / n),
+                whiskerLo: inliers[0],
+                whiskerHi: inliers[inliers.length - 1],
+                outliers: sorted.filter(c => c.totalCost < q1 - 1.5 * iqr || c.totalCost > q3 + 1.5 * iqr)
+            };
+        }
+
+        function fmtMoney(x) {
+            return '$' + (x >= 1 ? x.toFixed(2) : x >= 0.01 ? x.toFixed(3) : x.toFixed(4));
+        }
+
+        function escHtml(s) {
+            return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+        }
+
+        function niceStep(raw) {
+            const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+            const f = raw / mag;
+            return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+        }
+
+        function renderBoxPlot() {
+            const host = document.getElementById('boxPlot');
+            const tip = document.getElementById('boxTooltip');
+            const stats = computeBoxStats(boxConversations);
+            host.querySelectorAll('svg, .box-empty').forEach(n => n.remove());
+            tip.style.display = 'none';
+            if (!stats) {
+                const empty = document.createElement('div');
+                empty.className = 'box-empty';
+                empty.textContent = 'No conversations to show.';
+                host.appendChild(empty);
+                return;
+            }
+
+            const log = document.getElementById('boxLog').checked;
+            const W = host.clientWidth, H = 170;
+            const padL = 24, padR = 24, cy = 70, boxH = 44;
+            const dataMin = stats.min, dataMax = stats.max;
+
+            let d0, d1, ticks = [], f, inv;
+            if (log) {
+                let e0 = Math.floor(Math.log10(dataMin)), e1 = Math.ceil(Math.log10(dataMax));
+                if (e1 === e0) e1 = e0 + 1;
+                d0 = e0; d1 = e1;
+                f = x => padL + ((Math.log10(x) - d0) / (d1 - d0)) * (W - padL - padR);
+                for (let e = e0; e <= e1; e++) ticks.push(Math.pow(10, e));
+            } else {
+                const step = niceStep((dataMax || 1) / 6);
+                d0 = 0; d1 = Math.ceil(dataMax / step) * step || step;
+                f = x => padL + ((x - d0) / (d1 - d0)) * (W - padL - padR);
+                for (let t = 0; t <= d1 + step / 2; t += step) ticks.push(t);
+            }
+
+            const C = 'rgba(54, 162, 235, 1)', CFILL = 'rgba(54, 162, 235, 0.25)';
+            let s = '<svg width="' + W + '" height="' + H + '">';
+            ticks.forEach(t => {
+                const x = f(t);
+                s += '<line x1="' + x + '" x2="' + x + '" y1="' + (cy - 50) + '" y2="' + (cy + 50) + '" stroke="#eee"/>';
+                s += '<text x="' + x + '" y="' + (cy + 70) + '" text-anchor="middle" font-size="11" fill="#666">' + fmtMoney(t) + '</text>';
+            });
+            s += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + (cy + 50) + '" y2="' + (cy + 50) + '" stroke="#ccc"/>';
+
+            // whiskers
+            const xwl = f(stats.whiskerLo), xwh = f(stats.whiskerHi);
+            const xq1 = f(stats.q1), xq3 = f(stats.q3), xmed = f(stats.median), xmean = f(stats.mean);
+            s += '<line x1="' + xwl + '" x2="' + xq1 + '" y1="' + cy + '" y2="' + cy + '" stroke="' + C + '" stroke-width="2"/>';
+            s += '<line x1="' + xq3 + '" x2="' + xwh + '" y1="' + cy + '" y2="' + cy + '" stroke="' + C + '" stroke-width="2"/>';
+            [xwl, xwh].forEach(x => {
+                s += '<line x1="' + x + '" x2="' + x + '" y1="' + (cy - 10) + '" y2="' + (cy + 10) + '" stroke="' + C + '" stroke-width="2"/>';
+            });
+            // box + median
+            s += '<rect x="' + xq1 + '" y="' + (cy - boxH / 2) + '" width="' + Math.max(xq3 - xq1, 2) + '" height="' + boxH +
+                 '" rx="4" fill="' + CFILL + '" stroke="' + C + '" stroke-width="2"/>';
+            s += '<line x1="' + xmed + '" x2="' + xmed + '" y1="' + (cy - boxH / 2) + '" y2="' + (cy + boxH / 2) + '" stroke="' + C + '" stroke-width="3"/>';
+            // mean diamond
+            s += '<path d="M' + xmean + ' ' + (cy - 7) + ' L' + (xmean + 7) + ' ' + cy + ' L' + xmean + ' ' + (cy + 7) +
+                 ' L' + (xmean - 7) + ' ' + cy + ' Z" fill="#fff" stroke="#333" stroke-width="1.5"/>';
+            // outliers
+            stats.outliers.forEach((c, i) => {
+                const x = f(c.totalCost);
+                s += '<circle cx="' + x + '" cy="' + cy + '" r="4" fill="rgba(54,162,235,0.5)" stroke="#fff" stroke-width="1"/>';
+                s += '<circle class="box-hit" data-out="' + i + '" cx="' + x + '" cy="' + cy + '" r="9" fill="transparent"/>';
+            });
+            // hit area for the box and whiskers (drawn first so outlier hits win via DOM order below)
+            s += '<rect class="box-hit" data-box="1" x="' + xwl + '" y="' + (cy - boxH / 2 - 6) + '" width="' + Math.max(xwh - xwl, 2) +
+                 '" height="' + (boxH + 12) + '" fill="transparent"/>';
+            s += '</svg>';
+            host.insertAdjacentHTML('afterbegin', s);
+
+            // tooltip
+            const row = (k, v) => '<div class="tt-row"><span>' + k + '</span><span>' + v + '</span></div>';
+            function show(html, ev) {
+                tip.innerHTML = html;
+                tip.style.display = 'block';
+                const r = host.getBoundingClientRect();
+                let x = ev.clientX - r.left + 14, y = ev.clientY - r.top + 14;
+                if (x + tip.offsetWidth > host.clientWidth) x = ev.clientX - r.left - tip.offsetWidth - 14;
+                if (y + tip.offsetHeight > H) y = Math.max(0, H - tip.offsetHeight);
+                tip.style.left = Math.max(0, x) + 'px';
+                tip.style.top = y + 'px';
+            }
+            const boxHtml =
+                '<div class="tt-title">Cost per conversation</div>' +
+                row('Conversations', stats.n) +
+                row('Mean', fmtMoney(stats.mean)) +
+                row('Median', fmtMoney(stats.median)) +
+                row('IQR', fmtMoney(stats.q1) + ' – ' + fmtMoney(stats.q3)) +
+                row('Max', fmtMoney(stats.max));
+            host.querySelectorAll('.box-hit').forEach(el => {
+                const move = ev => {
+                    if (el.dataset.out !== undefined) {
+                        const c = stats.outliers[+el.dataset.out];
+                        show('<div class="tt-title">Outlier</div>' +
+                             '<div>' + escHtml(c.conversationTitle.substring(0, 60)) + '</div>' +
+                             row('Cost', fmtMoney(c.totalCost)) +
+                             row('Date', c.startTime ? new Date(c.startTime).toLocaleDateString() : 'Unknown'), ev);
+                    } else {
+                        show(boxHtml, ev);
+                    }
+                };
+                el.addEventListener('mouseenter', move);
+                el.addEventListener('mousemove', move);
+                el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+            });
+        }
+
+        document.getElementById('boxLog').addEventListener('change', renderBoxPlot);
+        window.addEventListener('resize', renderBoxPlot);
+        renderBoxPlot();
+
         // Project filter functionality
         document.getElementById('projectFilter').addEventListener('change', function(e) {
             const selectedProject = e.target.value;
@@ -615,6 +824,10 @@ function createHTMLReport(conversations) {
             document.querySelectorAll('.summary-value')[1].textContent = filteredConversations.length;
             document.querySelectorAll('.summary-value')[2].textContent = '$' + (totalCost / filteredConversations.length).toFixed(4);
             
+            // Update box plot
+            boxConversations = filteredConversations;
+            renderBoxPlot();
+
             // Update daily chart
             const filteredDailyData = dailyDataByProject.map(day => {
                 const filteredDayConversations = selectedProject === 'all' 
