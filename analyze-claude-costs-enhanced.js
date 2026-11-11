@@ -81,6 +81,14 @@ function calculateCost(usage, model) {
 // so count each API response (message id + request id) only once.
 const seenResponses = new Set();
 
+// YYYY-MM-DD in the local time zone (toISOString() would give the UTC date).
+function localDateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 async function parseJSONLFile(filePath) {
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
@@ -89,6 +97,9 @@ async function parseJSONLFile(filePath) {
   });
 
   let totalCost = 0;
+  // Cost per local day, so conversations that span midnight are split across days
+  const costByDay = {};
+  let undatedCost = 0;
   let messageCount = 0;
   let conversationName = '';
   let conversationTitle = '';
@@ -135,6 +146,13 @@ async function parseJSONLFile(filePath) {
           const cost = calculateCost(usage, model);
           totalCost += cost;
           messageCount++;
+          const msgTime = message.timestamp ? new Date(message.timestamp) : null;
+          if (msgTime && !isNaN(msgTime)) {
+            const dayKey = localDateKey(msgTime);
+            costByDay[dayKey] = (costByDay[dayKey] || 0) + cost;
+          } else {
+            undatedCost += cost;
+          }
         }
       }
 
@@ -154,11 +172,18 @@ async function parseJSONLFile(filePath) {
     conversationTitle = summary || firstUserMessage || 'Untitled conversation';
   }
 
+  // Messages without a timestamp count toward the day the conversation started
+  if (undatedCost > 0 && startTime) {
+    const dayKey = localDateKey(startTime);
+    costByDay[dayKey] = (costByDay[dayKey] || 0) + undatedCost;
+  }
+
   return {
     conversationId: path.basename(filePath, '.jsonl'),
     conversationName,
     conversationTitle: conversationTitle.replace(/\n/g, ' ').substring(0, 100),
     totalCost,
+    costByDay,
     messageCount,
     startTime,
     endTime,
@@ -227,9 +252,10 @@ async function analyzeAllConversations() {
 function aggregateDailyCosts(conversations) {
   const dailyCosts = {};
 
+  // A conversation that spans several days adds its cost from each day to that day
   conversations.forEach(conv => {
-    if (conv.totalCost > 0 && conv.startTime) {
-      const dateKey = conv.startTime.toISOString().split('T')[0];
+    for (const [dateKey, cost] of Object.entries(conv.costByDay || {})) {
+      if (cost <= 0) continue;
       if (!dailyCosts[dateKey]) {
         dailyCosts[dateKey] = {
           date: dateKey,
@@ -238,11 +264,18 @@ function aggregateDailyCosts(conversations) {
           conversations: []
         };
       }
-      dailyCosts[dateKey].totalCost += conv.totalCost;
+      dailyCosts[dateKey].totalCost += cost;
       dailyCosts[dateKey].conversationCount += 1;
-      dailyCosts[dateKey].conversations.push(conv);
+      // Keep only what the chart needs; cost is this conversation's cost on this day
+      dailyCosts[dateKey].conversations.push({
+        conversationTitle: conv.conversationTitle,
+        projectName: conv.projectName,
+        cost
+      });
     }
   });
+
+  Object.values(dailyCosts).forEach(day => day.conversations.sort((a, b) => b.cost - a.cost));
 
   // Convert to array and sort by date
   return Object.values(dailyCosts).sort((a, b) => a.date.localeCompare(b.date));
@@ -255,7 +288,7 @@ function getLast30Days() {
   for (let i = 29; i >= 0; i--) {
     const date = new Date(today);
     date.setDate(date.getDate() - i);
-    days.push(date.toISOString().split('T')[0]);
+    days.push(localDateKey(date));
   }
 
   return days;
@@ -589,7 +622,7 @@ function createHTMLReport(conversations) {
                                     lines.push('Conversations: ' + dayData.conversations.length);
                                     lines.push('---');
                                     dayData.conversations.slice(0, 3).forEach(conv => {
-                                        lines.push(conv.conversationTitle.substring(0, 40) + '...: $' + conv.totalCost.toFixed(2));
+                                        lines.push(conv.conversationTitle.substring(0, 40) + '...: $' + conv.cost.toFixed(2));
                                     });
                                     if (dayData.conversations.length > 3) {
                                         lines.push('... and ' + (dayData.conversations.length - 3) + ' more');
@@ -836,7 +869,7 @@ function createHTMLReport(conversations) {
                 
                 return {
                     date: day.date,
-                    cost: filteredDayConversations.reduce((sum, c) => sum + c.totalCost, 0)
+                    cost: filteredDayConversations.reduce((sum, c) => sum + c.cost, 0)
                 };
             });
             
