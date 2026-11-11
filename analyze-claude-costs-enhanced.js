@@ -281,6 +281,18 @@ function aggregateDailyCosts(conversations) {
   return Object.values(dailyCosts).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Number of calendar days from the first day with any cost to the last, inclusive
+// (idle days in between count). Also embedded in the HTML report for the project filter.
+function countDaysInSpan(conversations) {
+  const days = conversations.flatMap(c => Object.keys(c.costByDay || {})).sort();
+  if (days.length === 0) return 0;
+  const toUTC = key => {
+    const [y, m, d] = key.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((toUTC(days[days.length - 1]) - toUTC(days[0])) / 86400000) + 1;
+}
+
 function getLast30Days() {
   const days = [];
   const today = new Date();
@@ -499,8 +511,8 @@ function createHTMLReport(conversations) {
                 <div class="summary-value">${conversationsWithCosts.length}</div>
             </div>
             <div class="summary-item">
-                <div>Average Cost</div>
-                <div class="summary-value">$${(totalCost / conversationsWithCosts.length).toFixed(
+                <div>Average Daily Cost</div>
+                <div class="summary-value">$${(totalCost / (countDaysInSpan(conversationsWithCosts) || 1)).toFixed(
                   4
                 )}</div>
             </div>
@@ -569,6 +581,7 @@ function createHTMLReport(conversations) {
         // Store all conversation data for filtering
         const allConversations = ${JSON.stringify(conversationsWithCosts)};
         const dailyDataByProject = ${JSON.stringify(last30DaysData)};
+        ${countDaysInSpan.toString()}
         
         // Daily cost chart
         const dailyCtx = document.getElementById('dailyChart').getContext('2d');
@@ -855,7 +868,7 @@ function createHTMLReport(conversations) {
             const totalCost = filteredConversations.reduce((sum, c) => sum + c.totalCost, 0);
             document.querySelector('.summary-value').textContent = '$' + totalCost.toFixed(4);
             document.querySelectorAll('.summary-value')[1].textContent = filteredConversations.length;
-            document.querySelectorAll('.summary-value')[2].textContent = '$' + (totalCost / filteredConversations.length).toFixed(4);
+            document.querySelectorAll('.summary-value')[2].textContent = '$' + (totalCost / (countDaysInSpan(filteredConversations) || 1)).toFixed(4);
             
             // Update box plot
             boxConversations = filteredConversations;
