@@ -166,6 +166,20 @@ async function parseJSONLFile(filePath) {
   };
 }
 
+// List .jsonl files in a project folder, including nested folders. Claude Code saves
+// helper-agent (subagent) logs in <session>/subagents/, and their usage is billed too.
+function listJsonlFiles(dir) {
+  let files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      files = files.concat(listJsonlFiles(path.join(dir, entry.name)).map(f => path.join(entry.name, f)));
+    } else if (entry.name.endsWith('.jsonl')) {
+      files.push(entry.name);
+    }
+  }
+  return files;
+}
+
 async function analyzeAllConversations() {
   const claudeProjectsDir = path.join(process.env.HOME, '.claude', 'projects');
 
@@ -184,12 +198,12 @@ async function analyzeAllConversations() {
   let processedCount = 0;
   const totalFiles = projectDirs.reduce((acc, dir) => {
     const projectPath = path.join(claudeProjectsDir, dir);
-    return acc + fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl')).length;
+    return acc + listJsonlFiles(projectPath).length;
   }, 0);
 
   for (const projectDir of projectDirs) {
     const projectPath = path.join(claudeProjectsDir, projectDir);
-    const jsonlFiles = fs.readdirSync(projectPath).filter(file => file.endsWith('.jsonl'));
+    const jsonlFiles = listJsonlFiles(projectPath);
 
     for (const jsonlFile of jsonlFiles) {
       const filePath = path.join(projectPath, jsonlFile);
