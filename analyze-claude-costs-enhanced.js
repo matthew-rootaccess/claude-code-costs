@@ -6,108 +6,67 @@ const readline = require('readline');
 const os = require('os');
 const { exec } = require('child_process');
 
-// Claude API Pricing (per million tokens)
+// Claude pricing in USD per million tokens.
+// Source: https://aws.amazon.com/bedrock/pricing/ (Anthropic, Global Cross-region Inference,
+// US East, on-demand), checked 2026-11-11 and cross-checked against Anthropic's published
+// API prices. cache_write is the 5-minute cache write rate.
+const p = (input, output, cache_write, cache_read) => ({ input, output, cache_write, cache_read });
+
 const CLAUDE_PRICING = {
-  // Claude Opus 4
-  'claude-opus-4-20250514': {
-    input: 15.0,
-    output: 75.0,
-    cache_write: 18.75,
-    cache_read: 1.5
-  },
-  // Claude Sonnet 4
-  'claude-sonnet-4-20250514': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  // Claude Sonnet 3.7
-  'claude-3-7-sonnet-20250219': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  'claude-3-7-sonnet-latest': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  // Claude Sonnet 3.5
-  'claude-3-5-sonnet-20241022': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  'claude-3-5-sonnet-20240620': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  'claude-3-5-sonnet-latest': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  // Claude Haiku 3.5
-  'claude-3-5-haiku-20241022': {
-    input: 0.8,
-    output: 4.0,
-    cache_write: 1.0,
-    cache_read: 0.08
-  },
-  'claude-3-5-haiku-latest': {
-    input: 0.8,
-    output: 4.0,
-    cache_write: 1.0,
-    cache_read: 0.08
-  },
-  // Claude Opus 3
-  'claude-3-opus-20240229': {
-    input: 15.0,
-    output: 75.0,
-    cache_write: 18.75,
-    cache_read: 1.5
-  },
-  'claude-3-opus-latest': {
-    input: 15.0,
-    output: 75.0,
-    cache_write: 18.75,
-    cache_read: 1.5
-  },
-  // Claude Sonnet 3
-  'claude-3-sonnet-20240229': {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  },
-  // Claude Haiku 3
-  'claude-3-haiku-20240307': {
-    input: 0.25,
-    output: 1.25,
-    cache_write: 0.3,
-    cache_read: 0.03
-  },
-  // Default pricing (use Sonnet 3.5 as default)
-  default: {
-    input: 3.0,
-    output: 15.0,
-    cache_write: 3.75,
-    cache_read: 0.3
-  }
+  // Claude 5.x
+  'claude-fable-5-2': p(8.0, 40.0, 10.0, 0.2),
+  'claude-mythos-5-2': p(8.0, 40.0, 10.0, 0.2),
+  'claude-fable-5-1': p(10.0, 50.0, 12.5, 0.25),
+  'claude-mythos-5-1': p(10.0, 50.0, 12.5, 0.25),
+  'claude-fable-5': p(10.0, 50.0, 12.5, 1.0),
+  'claude-mythos-5': p(10.0, 50.0, 12.5, 1.0),
+  'claude-opus-5-5': p(4.0, 20.0, 5.0, 0.2),
+  'claude-opus-5': p(5.0, 25.0, 6.25, 0.5),
+  'claude-sonnet-5-5': p(2.0, 10.0, 2.5, 0.1),
+  'claude-sonnet-5': p(2.0, 10.0, 2.5, 0.2),
+  'claude-haiku-5-5': p(0.1, 0.5, 0.125, 0.01), // prompts up to 100K tokens
+
+  // Claude 4.x
+  'claude-opus-4-8': p(5.0, 25.0, 6.25, 0.5),
+  'claude-opus-4-7': p(5.0, 25.0, 6.25, 0.5),
+  'claude-opus-4-6': p(5.0, 25.0, 6.25, 0.5),
+  'claude-opus-4-5': p(5.0, 25.0, 6.25, 0.5),
+  'claude-opus-4-1': p(15.0, 75.0, 18.75, 1.5),
+  'claude-opus-4': p(15.0, 75.0, 18.75, 1.5),
+  'claude-sonnet-4-6': p(3.0, 15.0, 3.75, 0.3),
+  'claude-sonnet-4-5': p(3.0, 15.0, 3.75, 0.3),
+  'claude-sonnet-4': p(3.0, 15.0, 3.75, 0.3),
+  'claude-haiku-4-5': p(1.0, 5.0, 1.25, 0.1),
+
+  // Claude 3.x
+  'claude-3-7-sonnet': p(3.0, 15.0, 3.75, 0.3),
+  'claude-3-5-sonnet': p(3.0, 15.0, 3.75, 0.3),
+  'claude-3-5-haiku': p(0.8, 4.0, 1.0, 0.08),
+  'claude-3-opus': p(15.0, 75.0, 18.75, 1.5),
+  'claude-3-sonnet': p(3.0, 15.0, 3.75, 0.3),
+  'claude-3-haiku': p(0.25, 1.25, 0.3, 0.03),
+
+  // Fallback for unrecognized models (Sonnet-tier pricing)
+  default: p(3.0, 15.0, 3.75, 0.3)
 };
+
+// Map a logged model id (e.g. "claude-opus-4-5-20251101", "claude-3-5-sonnet-latest",
+// "us.anthropic.claude-sonnet-4-5-20250929-v1:0") to a CLAUDE_PRICING key.
+function getPricing(model) {
+  if (!model) return CLAUDE_PRICING.default;
+  const id = String(model)
+    .replace(/^.*anthropic\./, '')
+    .replace(/-v\d+:\d+$/, '')
+    .replace(/@.*$/, '')
+    .replace(/-(latest|\d{8})$/, '');
+  return CLAUDE_PRICING[id] || CLAUDE_PRICING.default;
+}
 
 function calculateCost(usage, model) {
   if (!usage) return 0;
 
   // Get pricing for the model, fallback to default
-  const pricing = CLAUDE_PRICING[model] || CLAUDE_PRICING['default'];
+  const pricing = getPricing(model);
 
   // Calculate costs for each token type (price per million tokens)
   const inputCost = ((usage.input_tokens || 0) * pricing.input) / 1000000;
@@ -117,6 +76,10 @@ function calculateCost(usage, model) {
 
   return inputCost + outputCost + cacheWriteCost + cacheReadCost;
 }
+
+// Claude Code logs one line per content block, each repeating the same usage,
+// so count each API response (message id + request id) only once.
+const seenResponses = new Set();
 
 async function parseJSONLFile(filePath) {
   const fileStream = fs.createReadStream(filePath);
@@ -163,6 +126,11 @@ async function parseJSONLFile(filePath) {
       if (message.type === 'assistant' && message.message) {
         const usage = message.message.usage;
         const model = message.message.model;
+        const responseKey = message.message.id && message.requestId
+          ? `${message.message.id}:${message.requestId}`
+          : null;
+        if (responseKey && seenResponses.has(responseKey)) continue;
+        if (responseKey) seenResponses.add(responseKey);
         if (usage && model) {
           const cost = calculateCost(usage, model);
           totalCost += cost;
